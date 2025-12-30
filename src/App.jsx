@@ -56,7 +56,14 @@ import {
 } from 'firebase/auth';
 
 // --- CONFIGURATION FIREBASE ---
-const firebaseConfig = JSON.parse(__firebase_config);
+const firebaseConfig = {
+  apiKey: "AIzaSyDBDhOTlBdKDSpM2M0fy8L0N7LyRQzf0Mk",
+  authDomain: "luna-budget.firebaseapp.com",
+  projectId: "luna-budget",
+  storageBucket: "luna-budget.firebasestorage.app",
+  messagingSenderId: "1008826442724",
+  appId: "1:1008826442724:web:724fb2669678cadac41df1"
+};
 const app = initializeApp(firebaseConfig);
 const auth = getAuth(app);
 const db = getFirestore(app);
