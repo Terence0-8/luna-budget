@@ -1682,4 +1682,301 @@ const App = () => {
                     {variableExpenses.sort((a,b) => new Date(b.date) - new Date(a.date)).map(exp => {
                        const d = new Date(exp.date);
                        const catColor = allCategories.find(c => c.label === exp.category)?.color || '#64748b';
-                       return (
+                                              return (
+                        <GlassCard key={exp.id} className="!p-2">
+                          <TransactionRow 
+                            day={d.getDate()} 
+                            month={d.toLocaleDateString('fr-FR', {month: 'short'})} 
+                            title={exp.name} 
+                            subtitle={exp.category} 
+                            badgeColor={catColor} 
+                            amount={exp.amount} 
+                            onEdit={() => setEditingExpense(exp)}
+                            onDelete={() => requestDelete('expense', exp.id)} 
+                          />
+                        </GlassCard>
+                       );
+                    })}
+                     {variableExpenses.length === 0 && <div className="text-center py-12 text-slate-400 italic text-sm">Aucune dépense.</div>}
+                 </div>
+               </div>
+               <div className="hidden lg:block h-fit sticky top-6">
+                 <GlassCard>
+                    <h3 className="font-bold text-lg text-slate-800 mb-6 flex items-center gap-2"><Plus className="text-pink-500" size={20}/> Ajouter Dépense</h3>
+                    <ExpenseForm onSubmit={addVariableExpense} categories={allCategories} defaultCategory="Autre" />
+                 </GlassCard>
+               </div>
+            </div>
+          )}
+
+          {/* PROJETS TAB */}
+          {activeTab === 'projects' && (
+             <div className="space-y-8 pb-24">
+                 <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+                     {projects.filter(p => !p.archived).map(project => (
+                         <ProjectCard key={project.id} project={project} onClick={() => setActiveProject(project)} onArchive={() => requestDelete('archive', null, project)} onDelete={() => requestDelete('project', project.id)} />
+                     ))}
+
+                     <div onClick={() => { setShowMobileAdd(true); setMobileAddType('project'); }} className="border-2 border-dashed border-slate-300 rounded-3xl p-6 flex flex-col items-center justify-center cursor-pointer hover:border-blue-400 hover:bg-blue-50/50 transition-all duration-300 min-h-[200px] group hover:scale-[1.02]">
+                         <div className="w-16 h-16 bg-blue-100 rounded-full flex items-center justify-center text-blue-500 mb-4 group-hover:scale-110 transition-transform duration-300">
+                             <Plus size={32} />
+                         </div>
+                         <p className="font-bold text-slate-500 group-hover:text-blue-500">Nouveau Projet</p>
+                     </div>
+                 </div>
+
+                 {projects.some(p => p.archived) && (
+                     <div className="mt-12">
+                         <button onClick={() => setShowArchives(!showArchives)} className="flex items-center gap-2 text-slate-400 font-bold uppercase text-xs hover:text-slate-600 transition-colors mb-4">
+                             <Archive size={16} /> {showArchives ? 'Masquer les archives' : 'Voir les archives'} ({projects.filter(p => p.archived).length})
+                         </button>
+                         
+                         {showArchives && (
+                             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6 opacity-60 hover:opacity-100 transition-opacity">
+                                 {projects.filter(p => p.archived).map(project => (
+                                     <ProjectCard key={project.id} project={project} onClick={() => setActiveProject(project)} onArchive={() => requestDelete('unarchive', null, project)} />
+                                 ))}
+                             </div>
+                         )}
+                     </div>
+                 )}
+             </div>
+          )}
+        </div>
+      </div>
+
+      {/* MOBILE BOTTOM NAV */}
+      <div className="md:hidden fixed bottom-0 left-0 right-0 bg-white/90 backdrop-blur-xl border-t border-white/60 p-2 px-6 flex justify-between items-center z-40 pb-safe shadow-[0_-10px_40px_rgba(0,0,0,0.1)] rounded-t-3xl">
+          <button onClick={() => setActiveTab('summary')} className={`p-3 rounded-2xl transition-all ${activeTab === 'summary' ? 'text-purple-600 bg-purple-50' : 'text-slate-400'}`}><LayoutDashboard size={24} strokeWidth={activeTab === 'summary' ? 2.5 : 2} /></button>
+          <button onClick={() => setActiveTab('expenses')} className={`p-3 rounded-2xl transition-all ${activeTab === 'expenses' ? 'text-purple-600 bg-purple-50' : 'text-slate-400'}`}><Receipt size={24} strokeWidth={activeTab === 'expenses' ? 2.5 : 2} /></button>
+          
+          <div className="relative -top-6">
+             <button onClick={() => { 
+                 setShowMobileAdd(true); 
+                 if (activeTab === 'projects') setMobileAddType('project');
+                 else if (activeTab === 'fixed') setMobileAddType('recurring');
+                 else setMobileAddType('expense');
+             }} className="bg-slate-900 text-white p-4 rounded-full shadow-xl shadow-slate-900/40 active:scale-90 transition-transform"><Plus size={28} /></button>
+          </div>
+
+          <button onClick={() => setActiveTab('fixed')} className={`p-3 rounded-2xl transition-all ${activeTab === 'fixed' ? 'text-purple-600 bg-purple-50' : 'text-slate-400'}`}><Repeat size={24} strokeWidth={activeTab === 'fixed' ? 2.5 : 2} /></button>
+          <button onClick={() => setActiveTab('projects')} className={`p-3 rounded-2xl transition-all ${activeTab === 'projects' ? 'text-blue-500 bg-blue-50' : 'text-slate-400'}`}><Plane size={24} strokeWidth={activeTab === 'projects' ? 2.5 : 2} /></button>
+      </div>
+
+      {/* MOBILE ADD MODAL */}
+      {showMobileAdd && (
+        <div onClick={() => setShowMobileAdd(false)} className="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-slate-900/40 backdrop-blur-sm animate-in fade-in duration-200">
+           <div onClick={(e) => e.stopPropagation()} className="bg-white/80 backdrop-blur-2xl w-full max-w-md p-6 rounded-t-3xl sm:rounded-3xl shadow-2xl animate-in slide-in-from-bottom-full duration-300 border-t border-white/50 relative">
+              <button onClick={() => setShowMobileAdd(false)} className="absolute top-4 right-4 p-2 bg-slate-100 rounded-full text-slate-500 hover:bg-slate-200"><X size={20}/></button>
+              
+              <h3 className="text-xl font-black text-slate-800 mb-6 flex items-center gap-2">Ajouter...</h3>
+              
+              <div className="flex bg-slate-100 p-1 rounded-xl mb-6 overflow-x-auto">
+                 <button onClick={() => setMobileAddType('expense')} className={`flex-1 py-2 px-2 rounded-lg text-xs md:text-sm font-bold transition-all whitespace-nowrap ${mobileAddType === 'expense' ? 'bg-white text-pink-500 shadow-sm' : 'text-slate-400'}`}>Dépense</button>
+                 <button onClick={() => setMobileAddType('recurring')} className={`flex-1 py-2 px-2 rounded-lg text-xs md:text-sm font-bold transition-all whitespace-nowrap ${mobileAddType === 'recurring' ? 'bg-white text-purple-600 shadow-sm' : 'text-slate-400'}`}>Mensualité</button>
+                 <button onClick={() => setMobileAddType('project')} className={`flex-1 py-2 px-2 rounded-lg text-xs md:text-sm font-bold transition-all whitespace-nowrap ${mobileAddType === 'project' ? 'bg-white text-blue-500 shadow-sm' : 'text-slate-400'}`}>Projet</button>
+              </div>
+
+              {mobileAddType === 'expense' && <ExpenseForm onSubmit={addVariableExpense} categories={allCategories} defaultCategory="Autre" />}
+              {mobileAddType === 'recurring' && <RecurringForm onSubmit={addRecurring} />}
+              {mobileAddType === 'project' && <ProjectForm onSubmit={addProject} />}
+              <div className="h-6 md:hidden"></div>
+           </div>
+        </div>
+      )}
+
+      {/* MODAL EDIT EXPENSE (MAIN) */}
+      {editingExpense && (
+        <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-slate-900/40 backdrop-blur-sm animate-in fade-in duration-200">
+           <div className="bg-white/95 backdrop-blur-2xl w-full max-w-md p-6 rounded-t-3xl sm:rounded-3xl shadow-2xl animate-in slide-in-from-bottom-full duration-300 border-t border-white/50 relative">
+              <button onClick={() => setEditingExpense(null)} className="absolute top-4 right-4 p-2 bg-slate-100 rounded-full text-slate-500 hover:bg-slate-200"><X size={20}/></button>
+              <h3 className="text-xl font-black text-slate-800 mb-6 flex items-center gap-2">Modifier</h3>
+              <ExpenseForm 
+                onSubmit={updateVariableExpense} 
+                categories={allCategories} 
+                defaultCategory="Autre" 
+                initialData={editingExpense} 
+                buttonLabel="Sauvegarder les modifications"
+              />
+              <div className="h-6 md:hidden"></div>
+           </div>
+        </div>
+      )}
+
+      {/* MODAL EDIT PROJECT EXPENSE */}
+      {editingProjectExpense && (
+        <div className="fixed inset-0 z-[60] flex items-end sm:items-center justify-center bg-slate-900/40 backdrop-blur-sm animate-in fade-in duration-200">
+           <div className="bg-white/95 backdrop-blur-2xl w-full max-w-md p-6 rounded-t-3xl sm:rounded-3xl shadow-2xl animate-in slide-in-from-bottom-full duration-300 border-t border-white/50 relative">
+              <button onClick={() => setEditingProjectExpense(null)} className="absolute top-4 right-4 p-2 bg-slate-100 rounded-full text-slate-500 hover:bg-slate-200"><X size={20}/></button>
+              <h3 className="text-xl font-black text-slate-800 mb-6 flex items-center gap-2">Modifier dépense projet</h3>
+              <ExpenseForm 
+                onSubmit={updateProjectExpense} 
+                categories={allCategories} 
+                defaultCategory="Autre" 
+                initialData={editingProjectExpense} 
+                buttonLabel="Sauvegarder les modifications"
+              />
+              <div className="h-6 md:hidden"></div>
+           </div>
+        </div>
+      )}
+
+      {/* FULLSCREEN PROJECT VIEW */}
+      {activeProject && (
+          <div className={`fixed inset-0 z-50 bg-slate-50 flex flex-col ${isClosingProject ? 'animate-out zoom-out-95 duration-200 opacity-0' : 'animate-in zoom-in-95 duration-300'} fill-mode-forwards origin-center`}>
+              <div className="bg-white/80 backdrop-blur-xl border-b border-slate-200 p-4 pt-safe-top sticky top-0 z-10 transition-all duration-300 shadow-sm">
+                  <div className="max-w-3xl mx-auto flex items-center gap-4">
+                      <button onClick={closeProject} className="p-2 hover:bg-slate-100 rounded-full transition-colors"><ChevronLeft size={24} /></button>
+                      
+                      <div className="flex-1">
+                          {isEditingProject ? (
+                              <input 
+                                  id="project-name-input"
+                                  type="text" 
+                                  defaultValue={activeProject.name} 
+                                  className="text-xl font-black text-slate-800 bg-transparent border-b border-slate-300 w-full outline-none"
+                                  autoFocus
+                                  onBlur={(e) => {
+                                      const shouldClose = e.relatedTarget?.id !== 'project-budget-input';
+                                      const formData = new FormData();
+                                      formData.set('name', e.target.value);
+                                      formData.set('totalBudget', activeProject.totalBudget);
+                                      updateProjectDetails(formData, shouldClose);
+                                  }}
+                              />
+                          ) : (
+                              <div className="flex items-center gap-2" onClick={() => !activeProject.archived && setIsEditingProject(true)}>
+                                  <h2 className="text-xl font-black text-slate-800">{activeProject.name}</h2>
+                                  {!activeProject.archived && <Pencil size={14} className="text-slate-300" />}
+                              </div>
+                          )}
+                          <p className="text-xs font-bold text-slate-400 uppercase">Budget Ponctuel {activeProject.archived ? '(Archivé)' : ''}</p>
+                      </div>
+
+                      <div className="text-right">
+                          {isEditingProject ? (
+                              <div className="flex items-center gap-1">
+                                  <input 
+                                      id="project-budget-input"
+                                      type="number" 
+                                      defaultValue={activeProject.totalBudget} 
+                                      className="font-black text-lg text-blue-600 bg-transparent border-b border-blue-200 w-20 outline-none text-right"
+                                      onBlur={(e) => {
+                                          const shouldClose = e.relatedTarget?.id !== 'project-name-input';
+                                          const formData = new FormData();
+                                          formData.set('name', activeProject.name);
+                                          formData.set('totalBudget', e.target.value);
+                                          updateProjectDetails(formData, shouldClose);
+                                      }}
+                                  />
+                                  <span className="text-blue-600">€</span>
+                              </div>
+                          ) : (
+                              <div onClick={() => !activeProject.archived && setIsEditingProject(true)}>
+                                  <span className="block text-xs font-bold text-slate-400 uppercase">Total</span>
+                                  <span className="block font-black text-lg text-blue-600">{activeProject.totalBudget}€</span>
+                              </div>
+                          )}
+                      </div>
+                  </div>
+              </div>
+
+              <div className="flex-1 overflow-y-auto p-4 md:p-8 custom-scrollbar">
+                  <div className="max-w-3xl mx-auto space-y-6">
+                      <GlassCard className="!p-6 bg-gradient-to-br from-blue-50 to-indigo-50 border-blue-100">
+                          <div className="flex justify-between items-end mb-4">
+                              <div>
+                                  <p className="text-slate-500 text-xs font-bold uppercase mb-1">Reste disponible</p>
+                                  <h3 className="text-4xl font-black text-slate-800">
+                                      {(activeProject.totalBudget - (activeProject.expenses || []).reduce((acc, curr) => acc + curr.amount, 0)).toFixed(2)} €
+                                  </h3>
+                              </div>
+                              <div className="p-3 bg-white rounded-2xl shadow-sm text-blue-500">
+                                  <Wallet size={24} />
+                              </div>
+                          </div>
+                          <ProgressBar 
+                              current={(activeProject.expenses || []).reduce((acc, curr) => acc + curr.amount, 0)} 
+                              max={activeProject.totalBudget} 
+                              colorClass="from-blue-400 to-indigo-500"
+                          />
+                      </GlassCard>
+
+                      <div className="space-y-4">
+                          <div className="flex justify-between items-center">
+                              <h3 className="font-bold text-slate-800 flex items-center gap-2">
+                                  <Receipt size={20} className="text-slate-400" /> Dépenses du projet
+                              </h3>
+                              <button onClick={() => requestDelete(activeProject.archived ? 'unarchive' : 'archive', null, activeProject)} className="text-xs font-bold text-slate-400 hover:text-purple-500 flex items-center gap-1 transition-colors">
+                                  <Archive size={14} /> {activeProject.archived ? 'Désarchiver' : 'Archiver le projet'}
+                              </button>
+                          </div>
+                          
+                          {!activeProject.archived && (
+                              <div className="bg-white p-4 rounded-2xl shadow-sm border border-slate-100">
+                                  <p className="text-xs font-bold text-slate-400 uppercase mb-3">Ajouter une dépense rapide</p>
+                                  <ExpenseForm 
+                                    onSubmit={addProjectExpense} 
+                                    categories={allCategories} 
+                                    defaultCategory="Autre"
+                                    buttonLabel="Ajouter au projet"
+                                  />
+                              </div>
+                          )}
+
+                          <div className="space-y-2 pb-24">
+                              {((activeProject.expenses || []).sort((a,b) => new Date(b.date) - new Date(a.date))).map(exp => (
+                                  <div key={exp.id} className="bg-white/60 p-4 rounded-2xl border border-white/50 flex items-center justify-between group hover:bg-white/80 transition-all hover:shadow-sm">
+                                      <div className="flex items-center gap-4">
+                                          <div className="bg-blue-50 text-blue-500 p-2 rounded-xl">
+                                              <CalendarDays size={18} />
+                                          </div>
+                                          <div>
+                                              <p className="font-bold text-slate-800">{exp.name}</p>
+                                              <p className="text-xs text-slate-500">{exp.category} • {new Date(exp.date).toLocaleDateString('fr-FR')}</p>
+                                          </div>
+                                      </div>
+                                      <div className="flex items-center gap-4">
+                                          <span className="font-bold text-slate-800">-{exp.amount}€</span>
+                                          {!activeProject.archived && (
+                                              <div className="flex gap-1">
+                                                <button onClick={() => setEditingProjectExpense(exp)} className="p-2 text-slate-300 hover:text-blue-500 transition-colors">
+                                                    <Pencil size={18} />
+                                                </button>
+                                                <button onClick={() => requestDelete('project_expense', exp.id)} className="p-2 text-slate-300 hover:text-red-500 transition-colors">
+                                                    <Trash2 size={18} />
+                                                </button>
+                                              </div>
+                                          )}
+                                      </div>
+                                  </div>
+                              ))}
+                              {(!activeProject.expenses || activeProject.expenses.length === 0) && (
+                                  <div className="text-center py-12 text-slate-400 bg-slate-100/50 rounded-2xl border border-dashed border-slate-200">
+                                      Aucune dépense pour ce projet.
+                                  </div>
+                              )}
+                          </div>
+                      </div>
+                  </div>
+              </div>
+          </div>
+      )}
+
+      <style>{`
+        .pb-safe { padding-bottom: env(safe-area-inset-bottom); }
+        .pt-safe-top { padding-top: max(1rem, env(safe-area-inset-top)); }
+        .custom-scrollbar::-webkit-scrollbar { width: 4px; }
+        .custom-scrollbar::-webkit-scrollbar-track { background: transparent; }
+        .custom-scrollbar::-webkit-scrollbar-thumb { background: rgba(0,0,0,0.1); border-radius: 10px; }
+        @keyframes blob { 0% { transform: translate(0px, 0px) scale(1); } 33% { transform: translate(30px, -50px) scale(1.1); } 66% { transform: translate(-20px, 20px) scale(0.9); } 100% { transform: translate(0px, 0px) scale(1); } }
+        .animate-blob { animation: blob 7s infinite; }
+        .animation-delay-2000 { animation-delay: 2s; }
+        .animation-delay-4000 { animation-delay: 4s; }
+      `}</style>
+    </div>
+  );
+};
+
+export default App;
+
