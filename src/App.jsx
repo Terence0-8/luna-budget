@@ -32,7 +32,8 @@ import {
   Check,
   Download,
   Share,
-  Smartphone
+  Smartphone,
+  Upload
 } from 'lucide-react';
 import { initializeApp } from 'firebase/app';
 import { 
@@ -86,6 +87,57 @@ const DEFAULT_CATEGORIES = [
 const MONTHS_FR = ['Janvier', 'Février', 'Mars', 'Avril', 'Mai', 'Juin', 'Juillet', 'Août', 'Septembre', 'Octobre', 'Novembre', 'Décembre'];
 const DAYS_FR = ['Lun', 'Mar', 'Mer', 'Jeu', 'Ven', 'Sam', 'Dim'];
 
+// --- HOOKS PERSONNALISÉS ---
+
+// Hook de backup local
+const useLocalBackup = (budgetKey, monthKey) => {
+  const backupKey = `luna_backup_${budgetKey}_${monthKey}`;
+  
+  const saveBackup = (data) => {
+    try {
+      localStorage.setItem(backupKey, JSON.stringify({
+        ...data,
+        lastBackup: Date.now()
+      }));
+      console.log('💾 Backup local sauvegardé');
+    } catch (error) {
+      console.error('Erreur backup local:', error);
+    }
+  };
+
+  const loadBackup = () => {
+    try {
+      const backup = localStorage.getItem(backupKey);
+      return backup ? JSON.parse(backup) : null;
+    } catch (error) {
+      console.error('Erreur chargement backup:', error);
+      return null;
+    }
+  };
+
+  const clearBackup = () => {
+    try {
+      localStorage.removeItem(backupKey);
+    } catch (error) {
+      console.error('Erreur suppression backup:', error);
+    }
+  };
+
+  return { saveBackup, loadBackup, clearBackup };
+};
+
+// Hook pour notifications toast
+const useToast = () => {
+  const [toast, setToast] = useState(null);
+
+  const showToast = (message, type = 'error') => {
+    setToast({ message, type });
+    setTimeout(() => setToast(null), 4000);
+  };
+
+  return { toast, showToast };
+};
+
 // --- UTILS ---
 const getDaysInMonth = (date) => {
   const year = date.getFullYear();
@@ -106,6 +158,25 @@ const generateColor = (str) => {
 };
 
 // --- COMPOSANTS UI ---
+
+const Toast = ({ message, type, onClose }) => {
+  if (!message) return null;
+  
+  const bgColor = type === 'error' ? 'bg-red-500' : type === 'success' ? 'bg-green-500' : 'bg-blue-500';
+  const Icon = type === 'error' ? AlertTriangle : type === 'success' ? Check : AlertTriangle;
+  
+  return (
+    <div className="fixed top-4 right-4 z-[100] animate-in slide-in-from-top-4 duration-300">
+      <div className={`${bgColor} text-white px-6 py-4 rounded-2xl shadow-2xl flex items-center gap-3 max-w-sm`}>
+        <Icon size={20} />
+        <p className="font-bold text-sm flex-1">{message}</p>
+        <button onClick={onClose} className="p-1 hover:bg-white/20 rounded-full transition-colors">
+          <X size={16} />
+        </button>
+      </div>
+    </div>
+  );
+};
 
 const GlassCard = ({ children, className = "", onClick }) => (
   <div 
@@ -707,7 +778,14 @@ const App = () => {
   const [projects, setProjects] = useState([]); 
   const [customCategories, setCustomCategories] = useState([]);
 
+  // NOUVEAUX STATES POUR BACKUP ET TOAST
+  const { toast, showToast } = useToast();
+  const [isOnline, setIsOnline] = useState(navigator.onLine);
+  const [pendingOperations, setPendingOperations] = useState([]);
+
   const monthKey = `${currentDate.getFullYear()}-${String(currentDate.getMonth() + 1).padStart(2, '0')}`;
+  const { saveBackup, loadBackup } = useLocalBackup(budgetKey, monthKey);
+  
   const monthName = currentDate.toLocaleDateString('fr-FR', { month: 'long', year: 'numeric' });
   const viewMonthEnd = useMemo(() => {
     const d = new Date(currentDate);
@@ -734,6 +812,27 @@ const App = () => {
     return merged;
   }, [customCategories]);
 
+  // Détection connexion
+  useEffect(() => {
+    const handleOnline = () => {
+      setIsOnline(true);
+      showToast('Connexion rétablie ✓', 'success');
+      replayPendingOperations();
+    };
+    const handleOffline = () => {
+      setIsOnline(false);
+      showToast('Vous êtes hors ligne', 'error');
+    };
+    
+    window.addEventListener('online', handleOnline);
+    window.addEventListener('offline', handleOffline);
+    
+    return () => {
+      window.removeEventListener('online', handleOnline);
+      window.removeEventListener('offline', handleOffline);
+    };
+  }, []);
+
   // Auth & Sync
   useEffect(() => {
     const initAuth = async () => {
@@ -751,19 +850,29 @@ const App = () => {
 
   // PWA Install Prompt Listener & iOS Detection
   useEffect(() => {
-      // Android / PC detection
       const handleBeforeInstallPrompt = (e) => {
           e.preventDefault();
           setDeferredPrompt(e);
       };
       window.addEventListener('beforeinstallprompt', handleBeforeInstallPrompt);
 
-      // iOS Detection
       const checkIsIOS = /iPad|iPhone|iPod/.test(navigator.userAgent) && !window.MSStream;
       setIsIOS(checkIsIOS);
 
       return () => window.removeEventListener('beforeinstallprompt', handleBeforeInstallPrompt);
   }, []);
+
+  // Charger backup au démarrage
+  useEffect(() => {
+    if (!user || !budgetKey) return;
+    
+    const backup = loadBackup();
+    if (backup && backup.expenses) {
+      setVariableExpenses(backup.expenses);
+      setMonthIncome(backup.income || 0);
+      console.log('📦 Backup local chargé');
+    }
+  }, [user, budgetKey, monthKey]);
 
   // Listeners
   useEffect(() => {
@@ -772,6 +881,9 @@ const App = () => {
     // Recurring
     const unsubRecurring = onSnapshot(query(collection(db, 'artifacts', appId, 'public', 'data', 'luna_shared_recurring'), where('budgetKey', '==', budgetKey)), (snapshot) => {
       setRecurringBills(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })));
+    }, (error) => {
+      console.error('Erreur listener recurring:', error);
+      showToast('Erreur de synchronisation', 'error');
     });
 
     // Month History
@@ -781,20 +893,29 @@ const App = () => {
         const data = docSnap.data();
         setMonthIncome(data.income || 0);
         setVariableExpenses(data.expenses || []);
+        // Sauvegarder en local
+        saveBackup(data);
       } else {
         setMonthIncome(0);
         setVariableExpenses([]);
       }
+    }, (error) => {
+      console.error('Erreur listener history:', error);
+      showToast('Erreur de synchronisation', 'error');
     });
 
     // Projects
     const unsubProjects = onSnapshot(query(collection(db, 'artifacts', appId, 'public', 'data', 'luna_shared_projects'), where('budgetKey', '==', budgetKey)), (snapshot) => {
         setProjects(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })));
+    }, (error) => {
+      console.error('Erreur listener projects:', error);
     });
 
     // Custom Categories
     const unsubCategories = onSnapshot(query(collection(db, 'artifacts', appId, 'public', 'data', 'luna_shared_categories'), where('budgetKey', '==', budgetKey)), (snapshot) => {
         setCustomCategories(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })));
+    }, (error) => {
+      console.error('Erreur listener categories:', error);
     });
 
     return () => { unsubRecurring(); unsubMonth(); unsubProjects(); unsubCategories(); };
@@ -810,7 +931,6 @@ const App = () => {
       setTimeout(() => { setActiveProject(null); setIsClosingProject(false); setIsEditingProject(false); }, 300);
   };
 
-  // PWA Install Handler (Called from Menu or Button)
   const handleInstallApp = () => {
       if (deferredPrompt) {
           deferredPrompt.prompt();
@@ -823,6 +943,85 @@ const App = () => {
       } else if (isIOS) {
           setShowInstallHelp(true);
       }
+  };
+
+  // Fonction de replay des opérations en attente
+  const replayPendingOperations = async () => {
+    if (pendingOperations.length === 0) return;
+    
+    console.log(`🔄 Rejeu de ${pendingOperations.length} opérations...`);
+    
+    for (const op of pendingOperations) {
+      try {
+        await op.execute();
+        setPendingOperations(prev => prev.filter(o => o.id !== op.id));
+      } catch (error) {
+        console.error('Erreur rejeu opération:', error);
+      }
+    }
+    
+    showToast('Données synchronisées ✓', 'success');
+  };
+
+  // --- EXPORT / IMPORT ---
+  const exportData = () => {
+    const data = {
+      budgetKey,
+      monthKey,
+      income: monthIncome,
+      expenses: variableExpenses,
+      recurring: recurringBills,
+      projects,
+      customCategories,
+      exportDate: new Date().toISOString()
+    };
+    
+    const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `luna-backup-${budgetKey}-${monthKey}.json`;
+    a.click();
+    URL.revokeObjectURL(url);
+    
+    showToast('Données exportées ✓', 'success');
+  };
+
+  const handleImportFile = (e) => {
+    const file = e.target.files[0];
+    if (!file) return;
+    
+    const reader = new FileReader();
+    reader.onload = async (event) => {
+      try {
+        const data = JSON.parse(event.target.result);
+        
+        if (!data.budgetKey || !data.monthKey) {
+          showToast('Fichier invalide', 'error');
+          return;
+        }
+        
+        // Restaurer les données localement
+        setMonthIncome(data.income || 0);
+        setVariableExpenses(data.expenses || []);
+        
+        // Sauvegarder dans Firebase
+        const docId = `${budgetKey}_${monthKey}`;
+        await setDoc(
+          doc(db, 'artifacts', appId, 'public', 'data', 'luna_shared_history', docId),
+          { budgetKey, income: data.income || 0, expenses: data.expenses || [] },
+          { merge: true }
+        );
+        
+        showToast('Données importées ✓', 'success');
+        
+      } catch (error) {
+        console.error('Erreur import:', error);
+        showToast('Erreur lors de l\'import', 'error');
+      }
+    };
+    reader.readAsText(file);
+    e.target.value = '';
   };
 
   // --- CONFIRMATION HANDLERS ---
@@ -876,112 +1075,330 @@ const App = () => {
           id: label.toLowerCase().replace(/\s+/g, '_'),
           color: generateColor(label)
       };
-      await addDoc(collection(db, 'artifacts', appId, 'public', 'data', 'luna_shared_categories'), newCat);
+      
+      try {
+        await addDoc(collection(db, 'artifacts', appId, 'public', 'data', 'luna_shared_categories'), newCat);
+      } catch (error) {
+        console.error('Erreur sauvegarde catégorie:', error);
+      }
   };
 
   const addRecurring = async (formData) => {
     if (!user || !budgetKey) return;
-    await addDoc(collection(db, 'artifacts', appId, 'public', 'data', 'luna_shared_recurring'), {
-      budgetKey: budgetKey, name: formData.get('name'), amount: Number(formData.get('amount')), day: Number(formData.get('day')), createdAt: Date.now()
-    });
-    setShowMobileAdd(false);
+    
+    try {
+      await addDoc(collection(db, 'artifacts', appId, 'public', 'data', 'luna_shared_recurring'), {
+        budgetKey: budgetKey, 
+        name: formData.get('name'), 
+        amount: Number(formData.get('amount')), 
+        day: Number(formData.get('day')), 
+        createdAt: Date.now()
+      });
+      showToast('Mensualité ajoutée ✓', 'success');
+      setShowMobileAdd(false);
+    } catch (error) {
+      console.error('Erreur Firebase:', error);
+      showToast('Erreur lors de l\'ajout', 'error');
+    }
   };
-  const deleteRecurring = async (id) => { if (user) await deleteDoc(doc(db, 'artifacts', appId, 'public', 'data', 'luna_shared_recurring', id)); };
+  
+  const deleteRecurring = async (id) => { 
+    if (!user) return;
+    try {
+      await deleteDoc(doc(db, 'artifacts', appId, 'public', 'data', 'luna_shared_recurring', id));
+      showToast('Mensualité supprimée ✓', 'success');
+    } catch (error) {
+      console.error('Erreur Firebase:', error);
+      showToast('Erreur lors de la suppression', 'error');
+    }
+  };
 
   const addVariableExpense = async (formData, category) => {
     if (!user || !budgetKey) return;
+    
     if (!DEFAULT_CATEGORIES.some(c => c.label === category)) {
-        await saveCustomCategory(category);
+      await saveCustomCategory(category);
     }
+    
     const newExp = {
-      id: Date.now().toString(), name: formData.get('name'), amount: Number(formData.get('amount')), date: formData.get('date'), category: category || 'Autre'
+      id: Date.now().toString(),
+      name: formData.get('name'),
+      amount: Number(formData.get('amount')),
+      date: formData.get('date'),
+      category: category || 'Autre'
     };
+    
+    const updatedExpenses = [...variableExpenses, newExp];
     const docId = `${budgetKey}_${monthKey}`;
-    await setDoc(doc(db, 'artifacts', appId, 'public', 'data', 'luna_shared_history', docId), { 
-      budgetKey: budgetKey, income: monthIncome, expenses: [...variableExpenses, newExp] 
-    }, { merge: true });
-    setShowMobileAdd(false);
+    
+    // 1. Mise à jour locale immédiate
+    setVariableExpenses(updatedExpenses);
+    
+    // 2. Backup local
+    saveBackup({ 
+      income: monthIncome, 
+      expenses: updatedExpenses 
+    });
+    
+    // 3. Synchronisation Firebase avec gestion d'erreur
+    try {
+      await setDoc(
+        doc(db, 'artifacts', appId, 'public', 'data', 'luna_shared_history', docId),
+        { 
+          budgetKey: budgetKey,
+          income: monthIncome,
+          expenses: updatedExpenses
+        },
+        { merge: true }
+      );
+      
+      showToast('Dépense ajoutée ✓', 'success');
+      setShowMobileAdd(false);
+      
+    } catch (error) {
+      console.error('Erreur Firebase:', error);
+      showToast('⚠️ Sauvegarde locale uniquement (hors ligne)', 'error');
+      
+      // Ajouter à la file d'attente pour retry
+      const operation = {
+        id: Date.now(),
+        type: 'addExpense',
+        execute: async () => {
+          await setDoc(
+            doc(db, 'artifacts', appId, 'public', 'data', 'luna_shared_history', docId),
+            { budgetKey, income: monthIncome, expenses: updatedExpenses },
+            { merge: true }
+          );
+        }
+      };
+      setPendingOperations(prev => [...prev, operation]);
+    }
   };
 
   const updateVariableExpense = async (formData, category) => {
-      if (!user || !budgetKey || !editingExpense) return;
-      if (!DEFAULT_CATEGORIES.some(c => c.label === category)) {
-        await saveCustomCategory(category);
-      }
-      const updatedExp = { ...editingExpense, name: formData.get('name'), amount: Number(formData.get('amount')), date: formData.get('date'), category: category || 'Autre' };
-      const newExpenses = variableExpenses.map(e => e.id === editingExpense.id ? updatedExp : e);
-      const docId = `${budgetKey}_${monthKey}`;
-      await setDoc(doc(db, 'artifacts', appId, 'public', 'data', 'luna_shared_history', docId), { expenses: newExpenses }, { merge: true });
+    if (!user || !budgetKey || !editingExpense) return;
+    
+    if (!DEFAULT_CATEGORIES.some(c => c.label === category)) {
+      await saveCustomCategory(category);
+    }
+    
+    const updatedExp = {
+      ...editingExpense,
+      name: formData.get('name'),
+      amount: Number(formData.get('amount')),
+      date: formData.get('date'),
+      category: category || 'Autre'
+    };
+    
+    const newExpenses = variableExpenses.map(e => 
+      e.id === editingExpense.id ? updatedExp : e
+    );
+    
+    const docId = `${budgetKey}_${monthKey}`;
+    
+    // Mise à jour locale immédiate
+    setVariableExpenses(newExpenses);
+    saveBackup({ income: monthIncome, expenses: newExpenses });
+    
+    try {
+      await setDoc(
+        doc(db, 'artifacts', appId, 'public', 'data', 'luna_shared_history', docId),
+        { expenses: newExpenses },
+        { merge: true }
+      );
+      
+      showToast('Modification enregistrée ✓', 'success');
       setEditingExpense(null);
+      
+    } catch (error) {
+      console.error('Erreur Firebase:', error);
+      showToast('⚠️ Modification en local uniquement', 'error');
+      setEditingExpense(null);
+    }
   };
 
   const deleteVariable = async (expId) => {
     if (!user || !budgetKey) return;
+    
     const updated = variableExpenses.filter(e => e.id !== expId);
     const docId = `${budgetKey}_${monthKey}`;
-    await setDoc(doc(db, 'artifacts', appId, 'public', 'data', 'luna_shared_history', docId), { expenses: updated }, { merge: true });
+    
+    // Mise à jour locale immédiate
+    setVariableExpenses(updated);
+    saveBackup({ income: monthIncome, expenses: updated });
+    
+    try {
+      await setDoc(
+        doc(db, 'artifacts', appId, 'public', 'data', 'luna_shared_history', docId),
+        { expenses: updated },
+        { merge: true }
+      );
+      
+      showToast('Dépense supprimée ✓', 'success');
+      
+    } catch (error) {
+      console.error('Erreur Firebase:', error);
+      showToast('⚠️ Suppression en local uniquement', 'error');
+    }
   };
 
   const updateIncome = async (val) => {
     if (!user || !budgetKey) return;
     const numVal = val === '' ? 0 : parseFloat(val);
     setMonthIncome(numVal);
+    
     const docId = `${budgetKey}_${monthKey}`;
-    await setDoc(doc(db, 'artifacts', appId, 'public', 'data', 'luna_shared_history', docId), { budgetKey: budgetKey, income: numVal, expenses: variableExpenses }, { merge: true });
+    
+    // Backup local
+    saveBackup({ income: numVal, expenses: variableExpenses });
+    
+    try {
+      await setDoc(
+        doc(db, 'artifacts', appId, 'public', 'data', 'luna_shared_history', docId),
+        { budgetKey: budgetKey, income: numVal, expenses: variableExpenses },
+        { merge: true }
+      );
+    } catch (error) {
+      console.error('Erreur Firebase:', error);
+      showToast('⚠️ Modification en local uniquement', 'error');
+    }
   };
 
   const addProject = async (formData) => {
       if (!user || !budgetKey) return;
-      await addDoc(collection(db, 'artifacts', appId, 'public', 'data', 'luna_shared_projects'), {
-          budgetKey: budgetKey, name: formData.get('name'), totalBudget: Number(formData.get('totalBudget')), expenses: [], createdAt: Date.now(), archived: false
-      });
-      setShowMobileAdd(false);
+      
+      try {
+        await addDoc(collection(db, 'artifacts', appId, 'public', 'data', 'luna_shared_projects'), {
+            budgetKey: budgetKey, 
+            name: formData.get('name'), 
+            totalBudget: Number(formData.get('totalBudget')), 
+            expenses: [], 
+            createdAt: Date.now(), 
+            archived: false
+        });
+        showToast('Projet créé ✓', 'success');
+        setShowMobileAdd(false);
+      } catch (error) {
+        console.error('Erreur Firebase:', error);
+        showToast('Erreur lors de la création', 'error');
+      }
   };
 
   const updateProjectDetails = async (formData, shouldClose = true) => {
       if (!user || !activeProject) return;
-      const updatedData = { name: formData.get('name'), totalBudget: Number(formData.get('totalBudget')) };
+      const updatedData = { 
+        name: formData.get('name'), 
+        totalBudget: Number(formData.get('totalBudget')) 
+      };
       setActiveProject({ ...activeProject, ...updatedData });
-      await updateDoc(doc(db, 'artifacts', appId, 'public', 'data', 'luna_shared_projects', activeProject.id), updatedData);
-      if (shouldClose) setIsEditingProject(false);
+      
+      try {
+        await updateDoc(doc(db, 'artifacts', appId, 'public', 'data', 'luna_shared_projects', activeProject.id), updatedData);
+        if (shouldClose) setIsEditingProject(false);
+      } catch (error) {
+        console.error('Erreur Firebase:', error);
+        showToast('Erreur lors de la modification', 'error');
+      }
   };
 
   const toggleArchiveProject = async (project) => {
       if (!user) return;
       if(activeProject && activeProject.id === project.id) closeProject();
-      await updateDoc(doc(db, 'artifacts', appId, 'public', 'data', 'luna_shared_projects', project.id), { archived: !project.archived });
+      
+      try {
+        await updateDoc(doc(db, 'artifacts', appId, 'public', 'data', 'luna_shared_projects', project.id), { 
+          archived: !project.archived 
+        });
+        showToast(project.archived ? 'Projet restauré ✓' : 'Projet archivé ✓', 'success');
+      } catch (error) {
+        console.error('Erreur Firebase:', error);
+        showToast('Erreur lors de l\'archivage', 'error');
+      }
   };
 
-  const deleteProject = async (id) => { if(user) await deleteDoc(doc(db, 'artifacts', appId, 'public', 'data', 'luna_shared_projects', id)); };
+  const deleteProject = async (id) => { 
+    if(!user) return;
+    try {
+      await deleteDoc(doc(db, 'artifacts', appId, 'public', 'data', 'luna_shared_projects', id));
+      showToast('Projet supprimé ✓', 'success');
+    } catch (error) {
+      console.error('Erreur Firebase:', error);
+      showToast('Erreur lors de la suppression', 'error');
+    }
+  };
 
   const addProjectExpense = async (formData, category) => {
       if (!user || !activeProject) return;
+      
       if (!DEFAULT_CATEGORIES.some(c => c.label === category)) {
         await saveCustomCategory(category);
       }
-      const newExp = { id: Date.now().toString(), name: formData.get('name'), amount: Number(formData.get('amount')), date: formData.get('date'), category: category || 'Autre' };
+      
+      const newExp = { 
+        id: Date.now().toString(), 
+        name: formData.get('name'), 
+        amount: Number(formData.get('amount')), 
+        date: formData.get('date'), 
+        category: category || 'Autre' 
+      };
       const updatedExpenses = [...(activeProject.expenses || []), newExp];
       setActiveProject({ ...activeProject, expenses: updatedExpenses }); 
-      await updateDoc(doc(db, 'artifacts', appId, 'public', 'data', 'luna_shared_projects', activeProject.id), { expenses: updatedExpenses });
+      
+      try {
+        await updateDoc(doc(db, 'artifacts', appId, 'public', 'data', 'luna_shared_projects', activeProject.id), { 
+          expenses: updatedExpenses 
+        });
+        showToast('Dépense ajoutée au projet ✓', 'success');
+      } catch (error) {
+        console.error('Erreur Firebase:', error);
+        showToast('Erreur lors de l\'ajout', 'error');
+      }
   };
 
   const updateProjectExpense = async (formData, category) => {
       if (!user || !activeProject || !editingProjectExpense) return;
+      
       if (!DEFAULT_CATEGORIES.some(c => c.label === category)) {
         await saveCustomCategory(category);
       }
-      const updatedExp = { ...editingProjectExpense, name: formData.get('name'), amount: Number(formData.get('amount')), date: formData.get('date'), category: category || 'Autre' };
+      
+      const updatedExp = { 
+        ...editingProjectExpense, 
+        name: formData.get('name'), 
+        amount: Number(formData.get('amount')), 
+        date: formData.get('date'), 
+        category: category || 'Autre' 
+      };
       const updatedExpenses = activeProject.expenses.map(e => e.id === editingProjectExpense.id ? updatedExp : e);
       setActiveProject({ ...activeProject, expenses: updatedExpenses });
-      await updateDoc(doc(db, 'artifacts', appId, 'public', 'data', 'luna_shared_projects', activeProject.id), { expenses: updatedExpenses });
-      setEditingProjectExpense(null);
+      
+      try {
+        await updateDoc(doc(db, 'artifacts', appId, 'public', 'data', 'luna_shared_projects', activeProject.id), { 
+          expenses: updatedExpenses 
+        });
+        showToast('Modification enregistrée ✓', 'success');
+        setEditingProjectExpense(null);
+      } catch (error) {
+        console.error('Erreur Firebase:', error);
+        showToast('Erreur lors de la modification', 'error');
+        setEditingProjectExpense(null);
+      }
   }
 
   const deleteProjectExpense = async (expId) => {
       if (!user || !activeProject) return;
       const updatedExpenses = activeProject.expenses.filter(e => e.id !== expId);
       setActiveProject({ ...activeProject, expenses: updatedExpenses });
-      await updateDoc(doc(db, 'artifacts', appId, 'public', 'data', 'luna_shared_projects', activeProject.id), { expenses: updatedExpenses });
+      
+      try {
+        await updateDoc(doc(db, 'artifacts', appId, 'public', 'data', 'luna_shared_projects', activeProject.id), { 
+          expenses: updatedExpenses 
+        });
+        showToast('Dépense supprimée ✓', 'success');
+      } catch (error) {
+        console.error('Erreur Firebase:', error);
+        showToast('Erreur lors de la suppression', 'error');
+      }
   };
 
   // Calculations
@@ -1073,6 +1490,17 @@ const App = () => {
   return (
     <div className="min-h-screen bg-slate-50 font-sans text-slate-800 relative overflow-x-hidden pb-32 md:pb-8">
       
+      {/* TOAST NOTIFICATIONS */}
+      <Toast message={toast?.message} type={toast?.type} onClose={() => showToast(null)} />
+      
+      {/* INDICATEUR CONNEXION */}
+      {!isOnline && (
+        <div className="fixed top-4 left-4 z-[90] bg-orange-500 text-white px-4 py-2 rounded-xl shadow-lg flex items-center gap-2 text-sm font-bold animate-in slide-in-from-left-4">
+          <AlertTriangle size={16} />
+          Mode hors ligne
+        </div>
+      )}
+      
       {/* CONFIRMATION & INSTALL HELP MODALS */}
       <ConfirmModal 
         isOpen={!!confirmation} 
@@ -1116,9 +1544,24 @@ const App = () => {
           </div>
 
           <div className="flex items-center gap-2">
-             {/* PWA INSTALL BUTTON (DESKTOP/ANDROID) */}
+             {/* BOUTON EXPORT */}
+             <button 
+               onClick={exportData} 
+               className="flex items-center justify-center p-2 bg-white/40 hover:bg-green-50 text-slate-600 hover:text-green-500 rounded-xl transition-all border border-white/50" 
+               title="Exporter les données"
+             >
+               <Download size={18} />
+             </button>
+             
+             {/* BOUTON IMPORT */}
+             <label className="flex items-center justify-center p-2 bg-white/40 hover:bg-blue-50 text-slate-600 hover:text-blue-500 rounded-xl transition-all border border-white/50 cursor-pointer" title="Importer des données">
+               <Upload size={18} />
+               <input type="file" accept=".json" onChange={handleImportFile} className="hidden" />
+             </label>
+             
+             {/* PWA INSTALL BUTTON */}
              {deferredPrompt && (
-                 <button onClick={handleInstallApp} className="flex items-center justify-center p-2 bg-slate-900 text-white hover:bg-slate-800 rounded-xl transition-all shadow-md animate-in fade-in zoom-in" title="Installer l'application">
+                 <button onClick={handleInstallApp} className="hidden md:flex items-center justify-center p-2 bg-slate-900 text-white hover:bg-slate-800 rounded-xl transition-all shadow-md animate-in fade-in zoom-in" title="Installer l'application">
                     <Download size={18} />
                  </button>
              )}
@@ -1171,12 +1614,10 @@ const App = () => {
                   <ProgressBar current={totalFixedBill + totalVariableSpent} max={monthIncome || 1} />
                 </GlassCard>
 
-                {/* MOBILE: Afficher "À venir" ici au lieu d'en bas */}
                 <div className="block lg:hidden">
                     <UpcomingWidget />
                 </div>
 
-                {/* DESKTOP: Afficher "Projet en cours" ici */}
                 <div className="hidden lg:block">
                     <ActiveProjectWidget />
                 </div>
@@ -1188,13 +1629,11 @@ const App = () => {
                    <SimplePieChart data={pieChartData} />
                 </GlassCard>
 
-                {/* MOBILE: Afficher "Projet en cours" ici (en bas) */}
                 <div className="block lg:hidden">
                     <ActiveProjectWidget />
                 </div>
               </div>
 
-              {/* DESKTOP SIDEBAR */}
               <div className="lg:col-span-1 hidden lg:block">
                 <UpcomingWidget />
               </div>
@@ -1244,303 +1683,3 @@ const App = () => {
                        const d = new Date(exp.date);
                        const catColor = allCategories.find(c => c.label === exp.category)?.color || '#64748b';
                        return (
-                        <GlassCard key={exp.id} className="!p-2">
-                          <TransactionRow 
-                            day={d.getDate()} 
-                            month={d.toLocaleDateString('fr-FR', {month: 'short'})} 
-                            title={exp.name} 
-                            subtitle={exp.category} 
-                            badgeColor={catColor} 
-                            amount={exp.amount} 
-                            onEdit={() => setEditingExpense(exp)}
-                            onDelete={() => requestDelete('expense', exp.id)} 
-                          />
-                        </GlassCard>
-                       )
-                    })}
-                     {variableExpenses.length === 0 && <div className="text-center py-12 text-slate-400 italic text-sm">Aucune dépense.</div>}
-                 </div>
-               </div>
-               <div className="hidden lg:block h-fit sticky top-6">
-                 <GlassCard>
-                    <h3 className="font-bold text-lg text-slate-800 mb-6 flex items-center gap-2"><Plus className="text-pink-500" size={20}/> Ajouter Dépense</h3>
-                    <ExpenseForm onSubmit={addVariableExpense} categories={allCategories} defaultCategory="Autre" />
-                 </GlassCard>
-               </div>
-            </div>
-          )}
-
-          {/* PROJETS TAB */}
-          {activeTab === 'projects' && (
-             <div className="space-y-8 pb-24">
-                 <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-                     {projects.filter(p => !p.archived).map(project => (
-                         <ProjectCard key={project.id} project={project} onClick={() => setActiveProject(project)} onArchive={() => requestDelete('archive', null, project)} onDelete={() => requestDelete('project', project.id)} />
-                     ))}
-
-                     <div onClick={() => { setShowMobileAdd(true); setMobileAddType('project'); }} className="border-2 border-dashed border-slate-300 rounded-3xl p-6 flex flex-col items-center justify-center cursor-pointer hover:border-blue-400 hover:bg-blue-50/50 transition-all duration-300 min-h-[200px] group hover:scale-[1.02]">
-                         <div className="w-16 h-16 bg-blue-100 rounded-full flex items-center justify-center text-blue-500 mb-4 group-hover:scale-110 transition-transform duration-300">
-                             <Plus size={32} />
-                         </div>
-                         <p className="font-bold text-slate-500 group-hover:text-blue-500">Nouveau Projet</p>
-                     </div>
-                 </div>
-
-                 {/* Section Archives */}
-                 {projects.some(p => p.archived) && (
-                     <div className="mt-12">
-                         <button onClick={() => setShowArchives(!showArchives)} className="flex items-center gap-2 text-slate-400 font-bold uppercase text-xs hover:text-slate-600 transition-colors mb-4">
-                             <Archive size={16} /> {showArchives ? 'Masquer les archives' : 'Voir les archives'} ({projects.filter(p => p.archived).length})
-                         </button>
-                         
-                         {showArchives && (
-                             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6 opacity-60 hover:opacity-100 transition-opacity">
-                                 {projects.filter(p => p.archived).map(project => (
-                                     <ProjectCard key={project.id} project={project} onClick={() => setActiveProject(project)} onArchive={() => requestDelete('unarchive', null, project)} />
-                                 ))}
-                             </div>
-                         )}
-                     </div>
-                 )}
-             </div>
-          )}
-        </div>
-      </div>
-
-      {/* MOBILE BOTTOM NAV */}
-      <div className="md:hidden fixed bottom-0 left-0 right-0 bg-white/90 backdrop-blur-xl border-t border-white/60 p-2 px-6 flex justify-between items-center z-40 pb-safe shadow-[0_-10px_40px_rgba(0,0,0,0.1)] rounded-t-3xl">
-          <button onClick={() => setActiveTab('summary')} className={`p-3 rounded-2xl transition-all ${activeTab === 'summary' ? 'text-purple-600 bg-purple-50' : 'text-slate-400'}`}><LayoutDashboard size={24} strokeWidth={activeTab === 'summary' ? 2.5 : 2} /></button>
-          <button onClick={() => setActiveTab('expenses')} className={`p-3 rounded-2xl transition-all ${activeTab === 'expenses' ? 'text-purple-600 bg-purple-50' : 'text-slate-400'}`}><Receipt size={24} strokeWidth={activeTab === 'expenses' ? 2.5 : 2} /></button>
-          
-          <div className="relative -top-6">
-             <button onClick={() => { 
-                 setShowMobileAdd(true); 
-                 if (activeTab === 'projects') setMobileAddType('project');
-                 else if (activeTab === 'fixed') setMobileAddType('recurring');
-                 else setMobileAddType('expense');
-             }} className="bg-slate-900 text-white p-4 rounded-full shadow-xl shadow-slate-900/40 active:scale-90 transition-transform"><Plus size={28} /></button>
-          </div>
-
-          <button onClick={() => setActiveTab('fixed')} className={`p-3 rounded-2xl transition-all ${activeTab === 'fixed' ? 'text-purple-600 bg-purple-50' : 'text-slate-400'}`}><Repeat size={24} strokeWidth={activeTab === 'fixed' ? 2.5 : 2} /></button>
-          <button onClick={() => setActiveTab('projects')} className={`p-3 rounded-2xl transition-all ${activeTab === 'projects' ? 'text-blue-500 bg-blue-50' : 'text-slate-400'}`}><Plane size={24} strokeWidth={activeTab === 'projects' ? 2.5 : 2} /></button>
-      </div>
-
-      {/* MOBILE ADD MODAL */}
-      {showMobileAdd && (
-        <div onClick={() => setShowMobileAdd(false)} className="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-slate-900/40 backdrop-blur-sm animate-in fade-in duration-200">
-           <div onClick={(e) => e.stopPropagation()} className="bg-white/80 backdrop-blur-2xl w-full max-w-md p-6 rounded-t-3xl sm:rounded-3xl shadow-2xl animate-in slide-in-from-bottom-full duration-300 border-t border-white/50 relative">
-              <button onClick={() => setShowMobileAdd(false)} className="absolute top-4 right-4 p-2 bg-slate-100 rounded-full text-slate-500 hover:bg-slate-200"><X size={20}/></button>
-              
-              <h3 className="text-xl font-black text-slate-800 mb-6 flex items-center gap-2">Ajouter...</h3>
-              
-              <div className="flex bg-slate-100 p-1 rounded-xl mb-6 overflow-x-auto">
-                 <button onClick={() => setMobileAddType('expense')} className={`flex-1 py-2 px-2 rounded-lg text-xs md:text-sm font-bold transition-all whitespace-nowrap ${mobileAddType === 'expense' ? 'bg-white text-pink-500 shadow-sm' : 'text-slate-400'}`}>Dépense</button>
-                 <button onClick={() => setMobileAddType('recurring')} className={`flex-1 py-2 px-2 rounded-lg text-xs md:text-sm font-bold transition-all whitespace-nowrap ${mobileAddType === 'recurring' ? 'bg-white text-purple-600 shadow-sm' : 'text-slate-400'}`}>Mensualité</button>
-                 <button onClick={() => setMobileAddType('project')} className={`flex-1 py-2 px-2 rounded-lg text-xs md:text-sm font-bold transition-all whitespace-nowrap ${mobileAddType === 'project' ? 'bg-white text-blue-500 shadow-sm' : 'text-slate-400'}`}>Projet</button>
-              </div>
-
-              {mobileAddType === 'expense' && <ExpenseForm onSubmit={addVariableExpense} categories={allCategories} defaultCategory="Autre" />}
-              {mobileAddType === 'recurring' && <RecurringForm onSubmit={addRecurring} />}
-              {mobileAddType === 'project' && <ProjectForm onSubmit={addProject} />}
-              <div className="h-6 md:hidden"></div>
-           </div>
-        </div>
-      )}
-
-      {/* MODAL EDIT EXPENSE (MAIN) */}
-      {editingExpense && (
-        <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-slate-900/40 backdrop-blur-sm animate-in fade-in duration-200">
-           <div className="bg-white/95 backdrop-blur-2xl w-full max-w-md p-6 rounded-t-3xl sm:rounded-3xl shadow-2xl animate-in slide-in-from-bottom-full duration-300 border-t border-white/50 relative">
-              <button onClick={() => setEditingExpense(null)} className="absolute top-4 right-4 p-2 bg-slate-100 rounded-full text-slate-500 hover:bg-slate-200"><X size={20}/></button>
-              <h3 className="text-xl font-black text-slate-800 mb-6 flex items-center gap-2">Modifier</h3>
-              <ExpenseForm 
-                onSubmit={updateVariableExpense} 
-                categories={allCategories} 
-                defaultCategory="Autre" 
-                initialData={editingExpense} 
-                buttonLabel="Sauvegarder les modifications"
-              />
-              <div className="h-6 md:hidden"></div>
-           </div>
-        </div>
-      )}
-
-      {/* MODAL EDIT PROJECT EXPENSE */}
-      {editingProjectExpense && (
-        <div className="fixed inset-0 z-[60] flex items-end sm:items-center justify-center bg-slate-900/40 backdrop-blur-sm animate-in fade-in duration-200">
-           <div className="bg-white/95 backdrop-blur-2xl w-full max-w-md p-6 rounded-t-3xl sm:rounded-3xl shadow-2xl animate-in slide-in-from-bottom-full duration-300 border-t border-white/50 relative">
-              <button onClick={() => setEditingProjectExpense(null)} className="absolute top-4 right-4 p-2 bg-slate-100 rounded-full text-slate-500 hover:bg-slate-200"><X size={20}/></button>
-              <h3 className="text-xl font-black text-slate-800 mb-6 flex items-center gap-2">Modifier dépense projet</h3>
-              <ExpenseForm 
-                onSubmit={updateProjectExpense} 
-                categories={allCategories} 
-                defaultCategory="Autre" 
-                initialData={editingProjectExpense} 
-                buttonLabel="Sauvegarder les modifications"
-              />
-              <div className="h-6 md:hidden"></div>
-           </div>
-        </div>
-      )}
-
-      {/* FULLSCREEN PROJECT VIEW (Hero Animation) */}
-      {activeProject && (
-          <div className={`fixed inset-0 z-50 bg-slate-50 flex flex-col ${isClosingProject ? 'animate-out zoom-out-95 duration-200 opacity-0' : 'animate-in zoom-in-95 duration-300'} fill-mode-forwards origin-center`}>
-              {/* Project Header */}
-              <div className="bg-white/80 backdrop-blur-xl border-b border-slate-200 p-4 pt-safe-top sticky top-0 z-10 transition-all duration-300 shadow-sm">
-                  <div className="max-w-3xl mx-auto flex items-center gap-4">
-                      <button onClick={closeProject} className="p-2 hover:bg-slate-100 rounded-full transition-colors"><ChevronLeft size={24} /></button>
-                      
-                      <div className="flex-1">
-                          {isEditingProject ? (
-                              <input 
-                                  id="project-name-input"
-                                  type="text" 
-                                  defaultValue={activeProject.name} 
-                                  className="text-xl font-black text-slate-800 bg-transparent border-b border-slate-300 w-full outline-none"
-                                  autoFocus
-                                  onBlur={(e) => {
-                                      const shouldClose = e.relatedTarget?.id !== 'project-budget-input';
-                                      const formData = new FormData();
-                                      formData.set('name', e.target.value);
-                                      formData.set('totalBudget', activeProject.totalBudget);
-                                      updateProjectDetails(formData, shouldClose);
-                                  }}
-                              />
-                          ) : (
-                              <div className="flex items-center gap-2" onClick={() => !activeProject.archived && setIsEditingProject(true)}>
-                                  <h2 className="text-xl font-black text-slate-800">{activeProject.name}</h2>
-                                  {!activeProject.archived && <Pencil size={14} className="text-slate-300" />}
-                              </div>
-                          )}
-                          <p className="text-xs font-bold text-slate-400 uppercase">Budget Ponctuel {activeProject.archived ? '(Archivé)' : ''}</p>
-                      </div>
-
-                      <div className="text-right">
-                          {isEditingProject ? (
-                              <div className="flex items-center gap-1">
-                                  <input 
-                                      id="project-budget-input"
-                                      type="number" 
-                                      defaultValue={activeProject.totalBudget} 
-                                      className="font-black text-lg text-blue-600 bg-transparent border-b border-blue-200 w-20 outline-none text-right"
-                                      onBlur={(e) => {
-                                          const shouldClose = e.relatedTarget?.id !== 'project-name-input';
-                                          const formData = new FormData();
-                                          formData.set('name', activeProject.name);
-                                          formData.set('totalBudget', e.target.value);
-                                          updateProjectDetails(formData, shouldClose);
-                                      }}
-                                  />
-                                  <span className="text-blue-600">€</span>
-                              </div>
-                          ) : (
-                              <div onClick={() => !activeProject.archived && setIsEditingProject(true)}>
-                                  <span className="block text-xs font-bold text-slate-400 uppercase">Total</span>
-                                  <span className="block font-black text-lg text-blue-600">{activeProject.totalBudget}€</span>
-                              </div>
-                          )}
-                      </div>
-                  </div>
-              </div>
-
-              {/* Project Content */}
-              <div className="flex-1 overflow-y-auto p-4 md:p-8 custom-scrollbar">
-                  <div className="max-w-3xl mx-auto space-y-6">
-                      <GlassCard className="!p-6 bg-gradient-to-br from-blue-50 to-indigo-50 border-blue-100">
-                          <div className="flex justify-between items-end mb-4">
-                              <div>
-                                  <p className="text-slate-500 text-xs font-bold uppercase mb-1">Reste disponible</p>
-                                  <h3 className="text-4xl font-black text-slate-800">
-                                      {(activeProject.totalBudget - (activeProject.expenses || []).reduce((acc, curr) => acc + curr.amount, 0)).toFixed(2)} €
-                                  </h3>
-                              </div>
-                              <div className="p-3 bg-white rounded-2xl shadow-sm text-blue-500">
-                                  <Wallet size={24} />
-                              </div>
-                          </div>
-                          <ProgressBar 
-                              current={(activeProject.expenses || []).reduce((acc, curr) => acc + curr.amount, 0)} 
-                              max={activeProject.totalBudget} 
-                              colorClass="from-blue-400 to-indigo-500"
-                          />
-                      </GlassCard>
-
-                      <div className="space-y-4">
-                          <div className="flex justify-between items-center">
-                              <h3 className="font-bold text-slate-800 flex items-center gap-2">
-                                  <Receipt size={20} className="text-slate-400" /> Dépenses du projet
-                              </h3>
-                              <button onClick={() => requestDelete(activeProject.archived ? 'unarchive' : 'archive', null, activeProject)} className="text-xs font-bold text-slate-400 hover:text-purple-500 flex items-center gap-1 transition-colors">
-                                  <Archive size={14} /> {activeProject.archived ? 'Désarchiver' : 'Archiver le projet'}
-                              </button>
-                          </div>
-                          
-                          {/* Add Expense Inline Form */}
-                          {!activeProject.archived && (
-                              <div className="bg-white p-4 rounded-2xl shadow-sm border border-slate-100">
-                                  <p className="text-xs font-bold text-slate-400 uppercase mb-3">Ajouter une dépense rapide</p>
-                                  <ExpenseForm 
-                                    onSubmit={addProjectExpense} 
-                                    categories={allCategories} 
-                                    defaultCategory="Autre"
-                                    buttonLabel="Ajouter au projet"
-                                  />
-                              </div>
-                          )}
-
-                          <div className="space-y-2 pb-24">
-                              {((activeProject.expenses || []).sort((a,b) => new Date(b.date) - new Date(a.date))).map(exp => (
-                                  <div key={exp.id} className="bg-white/60 p-4 rounded-2xl border border-white/50 flex items-center justify-between group hover:bg-white/80 transition-all hover:shadow-sm">
-                                      <div className="flex items-center gap-4">
-                                          <div className="bg-blue-50 text-blue-500 p-2 rounded-xl">
-                                              <CalendarDays size={18} />
-                                          </div>
-                                          <div>
-                                              <p className="font-bold text-slate-800">{exp.name}</p>
-                                              <p className="text-xs text-slate-500">{exp.category} • {new Date(exp.date).toLocaleDateString('fr-FR')}</p>
-                                          </div>
-                                      </div>
-                                      <div className="flex items-center gap-4">
-                                          <span className="font-bold text-slate-800">-{exp.amount}€</span>
-                                          {!activeProject.archived && (
-                                              <div className="flex gap-1">
-                                                <button onClick={() => setEditingProjectExpense(exp)} className="p-2 text-slate-300 hover:text-blue-500 transition-colors">
-                                                    <Pencil size={18} />
-                                                </button>
-                                                <button onClick={() => requestDelete('project_expense', exp.id)} className="p-2 text-slate-300 hover:text-red-500 transition-colors">
-                                                    <Trash2 size={18} />
-                                                </button>
-                                              </div>
-                                          )}
-                                      </div>
-                                  </div>
-                              ))}
-                              {(!activeProject.expenses || activeProject.expenses.length === 0) && (
-                                  <div className="text-center py-12 text-slate-400 bg-slate-100/50 rounded-2xl border border-dashed border-slate-200">
-                                      Aucune dépense pour ce projet.
-                                  </div>
-                              )}
-                          </div>
-                      </div>
-                  </div>
-              </div>
-          </div>
-      )}
-
-      <style>{`
-        .pb-safe { padding-bottom: env(safe-area-inset-bottom); }
-        .pt-safe-top { padding-top: max(1rem, env(safe-area-inset-top)); }
-        .custom-scrollbar::-webkit-scrollbar { width: 4px; }
-        .custom-scrollbar::-webkit-scrollbar-track { background: transparent; }
-        .custom-scrollbar::-webkit-scrollbar-thumb { background: rgba(0,0,0,0.1); border-radius: 10px; }
-        @keyframes blob { 0% { transform: translate(0px, 0px) scale(1); } 33% { transform: translate(30px, -50px) scale(1.1); } 66% { transform: translate(-20px, 20px) scale(0.9); } 100% { transform: translate(0px, 0px) scale(1); } }
-        .animate-blob { animation: blob 7s infinite; }
-        .animation-delay-2000 { animation-delay: 2s; }
-        .animation-delay-4000 { animation-delay: 4s; }
-      `}</style>
-    </div>
-  );
-};
-
-export default App;
